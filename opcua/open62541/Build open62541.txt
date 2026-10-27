@@ -1,0 +1,133 @@
+-----------------------------------------------------------------------------------------------
+Компилируем библиотеку open62541:
+Для сборки библиотеки нужен Python, качаем с официального сайта и добавляем его в окружение
+С помощью  MinGW получилось собрать только статическую библиотеку (отсутствует в компиляторе libssp)
+С 2022 года в поставку MinGW libssp не входит (https://github.com/JuliaLang/julia/issues/51740 https://www.msys2.org/news/#2022-10-10-libssp-is-no-longer-required)
+MinGW из поставки MSYS (libssp есть) ругается на обработку исключений, при отключении которой библиотека собирается, но возникают проблемы с ее
+подключением к проекту!!!
+
+
+------------------------------------MinGW------------------------------------
+
+# 1. Создаем директорию для сборки
+mkdir build
+cd build
+
+# 2. Добавляем cmake и компилятор в окружение
+$env:PATH = "C:\Qt\Tools\CMake_64\bin;" + $env:PATH
+$env:PATH = "C:\Qt\Tools\mingw1310_64\bin;" + $env:PATH
+$env:PATH = "C:\Users\Dima\AppData\Local\Programs\Python\Python313\;C:\Users\Dima\AppData\Local\Programs\Python\Python313\Scripts;" + $env:PATH
+$env:PATH = "C:\Qt\Tools\OpenSSLv3\Win_x64\bin;" + $env:PATH
+
+# 3. Проверяем версии  cmake и компилятора
+cmake --version
+gcc --version
+g++ --version
+mingw32-make --version
+python -V
+openssl version
+
+# 4. Конфигурация для MinGW
+# Сборка только статической библиотеки (без шифрования)
+cmake .. -G "MinGW Makefiles" `
+  -DCMAKE_INSTALL_PREFIX="C:\Qt\Tools\mingw1310_64\bin" `
+  -DCMAKE_PREFIX_PATH="C:\Qt\Tools\mingw1310_64\bin" `
+  -DUA_ENABLE_AMALGAMATION=ON `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DUA_ENABLE_ENCRYPTION_OPENSSL=ON `
+  -DUA_ENABLE_ENCRYPTION_MBEDTLS=ON `
+  -DBUILD_SHARED_LIBS=OFF ..
+
+# Сборка только статической библиотеки (с поддержкой шифрования)
+cmake .. -G "MinGW Makefiles" `
+	-DCMAKE_INSTALL_PREFIX="C:\Qt\Tools\mingw1310_64\bin" `
+	-DCMAKE_PREFIX_PATH="C:\Qt\Tools\mingw1310_64\bin" `
+	-DOPENSSL_ROOT_DIR="C:\Qt\Tools\OpenSSLv3\Win_x64" `
+	-DUA_ENABLE_AMALGAMATION=ON `
+	-DUA_AMALGAMATION_MULTIARCH=ON `
+	-DUA_MULTITHREADING=0 `
+	-DCMAKE_BUILD_TYPE=Release `
+	-DUA_ENABLE_ENCRYPTION=OPENSSL ..
+
+# Сборка динамической библиотеки (-DBUILD_SHARED_LIBS=ON - главный флаг для сборки shared libraries)
+# (не собирается т.к. для компилятора необходимо установить libssp.
+# С 2022 года в поставку MinGW libssp не входит (https://github.com/JuliaLang/julia/issues/51740 https://www.msys2.org/news/#2022-10-10-libssp-is-no-longer-required)
+# Собрать и подключить библиотеку получилось только с использованием компилятора MSVC.
+
+cmake .. -G "MinGW Makefiles" `
+  -DCMAKE_INSTALL_PREFIX="C:\Qt\Tools\mingw1310_64\bin" `
+  -DCMAKE_PREFIX_PATH="C:\Qt\Tools\mingw1310_64\bin" `
+  -DOPENSSL_ROOT_DIR="C:\Qt\Tools\OpenSSLv3\Win_x64" `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DUA_ENABLE_AMALGAMATION=ON `
+  -DBUILD_SHARED_LIBS=ON `
+  -DUA_ENABLE_ENCRYPTION=OPENSSL ..
+
+# 5. Сборка библиотеки
+cmake --build . --config Release
+
+
+------------------------------------MSVC------------------------------------
+
+#----------Сборка динамической библиотеки (компилятор MSVC)---------------
+Для сборки библиотеки нужен Python, качаем с официального сайта и добавляем его в окружение
+Качаем Visual Studio Code https://visualstudio.microsoft.com и устанавливаем Desktop development with C++
+далее из меню "Пуск" запускаем Developer PowerShell for VS2002 (либо добавляем его в окружение)
+
+# 1. Создаем директорию для сборки
+# cd - переходим в каталог для сборки
+mkdir build
+cd build
+
+# 2. Добавляем cmake и компилятор в окружение
+# MSVC
+$env:PATH = "C:\Qt\Tools\CMake_64\bin;" + $env:PATH
+$env:PATH = "C:\Users\Dima\AppData\Local\Programs\Python\Python313\;C:\Users\Dima\AppData\Local\Programs\Python\Python313\Scripts;" + $env:PATH
+$env:PATH = "C:\Qt\Tools\OpenSSLv3\Win_x64\bin;" + $env:PATH
+
+# 3. Проверяем версии  cmake и компилятора
+cmake --version
+python -V
+openssl version
+
+# 4. Конфигурация для Visual Studio
+# MSVC
+cmake .. -G "Visual Studio 17 2022" -A x64 `
+  -DOPENSSL_ROOT_DIR="C:\Qt\Tools\OpenSSLv3\Win_x64" `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DUA_ENABLE_AMALGAMATION=ON `
+  -DBUILD_SHARED_LIBS=ON `
+  -DUA_ENABLE_ENCRYPTION=OPENSSL ..
+
+# 5. Сборка библиотеки
+cmake --build . --config Release
+
+
+
+------------------------------------Генерируем сертификаты------------------------------------
+
+#Генерируем сертификаты (Генерируем для каждой локальной машины, где используем клиент!!!):
+#Powershell
+
+# Добовляем в окружение
+$env:PATH = "C:\Users\Dima\AppData\Local\Programs\Python\Python313\;C:\Users\Dima\AppData\Local\Programs\Python\Python313\Scripts;" + $env:PATH
+$env:PATH = "C:\Qt\Tools\OpenSSLv3\Win_x64\bin;" + $env:PATH
+
+# Смотрим версию
+python -V
+openssl version
+
+# Указать Application URI (Указываем обязательно!!! по умолчанию у приложения "urn:unconfigured:application")
+python create_certs_fixed.py -u "urn:ingcqtapp:opcuaclient"
+
+
+
+
+# Указать размер ключа (по умолчанию 2048)
+python create_self-signed.py -k 4096
+
+# Указать имя сертификата (по умолчанию "client")
+python create_self-signed.py -c "my_server_cert"
+
+# Простейший вызов - создаст сертификаты в текущей директории
+python create_certs_fixed.py .
