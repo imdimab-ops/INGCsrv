@@ -104,23 +104,20 @@ private:
         UA_EventFilter *filter;
         UA_MonitoredItemCreateRequest *monRequests;
         ~SubscribeGroupEvent() {
-            if (monitoredIds) {
-                UA_free(monitoredIds);
-                monitoredIds = nullptr;
-            }
             if (contexts) {
+                for (UA_UInt32 i = 0; i < monitoredIdsSize; ++i) {
+                    if (contexts[i]) {
+                        delete static_cast<ContextEvent*>(contexts[i]);
+                        contexts[i] = nullptr;
+                    }
+                }
                 UA_free(contexts);
                 contexts = nullptr;
             }
-            if (eventCallbacks) {
-                UA_free(eventCallbacks);
-                eventCallbacks = nullptr;
-            }
-            if (deleteCallbacks) {
-                UA_free(deleteCallbacks);
-                deleteCallbacks = nullptr;
-            }
-            cleanupResourcesSubscribeAsync(filter, monRequests, monitoredIdsSize); //очищаем ресурсы
+            if (monitoredIds) { UA_free(monitoredIds); monitoredIds = nullptr; }
+            if (eventCallbacks) { UA_free(eventCallbacks); eventCallbacks = nullptr; }
+            if (deleteCallbacks) { UA_free(deleteCallbacks); deleteCallbacks = nullptr; }
+            cleanupResourcesSubscribeAsync(filter, monRequests, monitoredIdsSize);
             eventFields.clear();
             nodeIds.clear();
         }
@@ -155,23 +152,20 @@ private:
         UA_DataChangeFilter *filter;
         UA_MonitoredItemCreateRequest *monRequests;
         ~SubscribeGroupNodes() {
-            if (monitoredIds) {
-                UA_free(monitoredIds);
-                monitoredIds = nullptr;
-            }
             if (contexts) {
+                for (UA_UInt32 i = 0; i < monitoredIdsSize; ++i) {
+                    if (contexts[i]) {
+                        delete static_cast<ContextNodes*>(contexts[i]);
+                        contexts[i] = nullptr;
+                    }
+                }
                 UA_free(contexts);
                 contexts = nullptr;
             }
-            if (dataChangeCallbacks) {
-                UA_free(dataChangeCallbacks);
-                dataChangeCallbacks = nullptr;
-            }
-            if (deleteCallbacks) {
-                UA_free(deleteCallbacks);
-                deleteCallbacks = nullptr;
-            }
-            cleanupResourcesSubscribeAsync(filter, monRequests, monitoredIdsSize); //очищаем ресурсы
+            if (monitoredIds) { UA_free(monitoredIds); monitoredIds = nullptr; }
+            if (dataChangeCallbacks) { UA_free(dataChangeCallbacks); dataChangeCallbacks = nullptr; }
+            if (deleteCallbacks) { UA_free(deleteCallbacks); deleteCallbacks = nullptr; }
+            cleanupResourcesSubscribeAsync(filter, monRequests, monitoredIdsSize);
             nodeIds.clear();
         }
         SubscribeGroupNodes()
@@ -227,7 +221,7 @@ private:
     static void readCallback(UA_Client *client, void *userdata, UA_UInt32 requestId, UA_ReadResponse *rr);
     static void writeCallback(UA_Client *client, void *userdata, UA_UInt32 requestId, UA_WriteResponse *wr);
     static UA_Boolean historicalEventCallback(UA_Client *client, const UA_NodeId *nodeId, UA_Boolean moreDataAvailable,
-                                             const UA_ExtensionObject *data, void *callbackContext);
+                                              const UA_ExtensionObject *data, void *callbackContext);
     static UA_Boolean historicalDataCallback(UA_Client *client, const UA_NodeId *nodeId, UA_Boolean moreDataAvailable,
                                              const UA_ExtensionObject *data, void *callbackContext);
     QDataEvent parsingEvent(const UA_Variant *eventFields, const size_t &nEventFields, const QList<QString> &eventFieldList);
@@ -243,7 +237,7 @@ public:
     bool getEndpoints(const QString &url, QList<Endpoint> &storeEndpoint);
     bool connectToServerAnonymous(const QString &url);
     bool connectToServerUsername(const QString &url, const Endpoint &endpoint, const QString &name, const QString &pass);
-    void disconnectFromServer();
+    void disconnectFromServer(); //асинхронный вызов
     /* синхронные запросы */
     bool browseNode(const QString &nodeId); //при загрузке смотрим Root
     bool readNodeAttributes(const QString &nodeId);

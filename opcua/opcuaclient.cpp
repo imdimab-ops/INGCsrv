@@ -14,7 +14,7 @@ OPCUAClient::OPCUAClient(QObject *parent)
 
 OPCUAClient::~OPCUAClient()
 {
-    disconnectFromServer();
+    disconnectClient();
 }
 
 OPCUAClient *OPCUAClient::getInstance()
@@ -516,34 +516,57 @@ QDataEvent OPCUAClient::parsingEvent(const UA_Variant *eventFields, const size_t
 
 void OPCUAClient::disconnectClient()
 {
-    if (!pclient) return;
-
+    // 1. Останавливаем таймеры, чтобы run_iterate не дёргал pclient во время очистки
     ptimer->stop();
     preadTimer->stop();
 
-    //чистим хэши
+    // 2. Чистим подписки и контексты (синхронно, без обращения к серверу)
     qDeleteAll(hSubscribeGroupEvent);
     hSubscribeGroupEvent.clear();
     qDeleteAll(hSubscribeGroupNodes);
     hSubscribeGroupNodes.clear();
     subscriptionIds.clear();
 
-    UA_Client_disconnect(pclient);
-    UA_ExtensionObject_clear(&UA_Client_getConfig(pclient)->userIdentityToken);
-    QString endpointUrl = toQString(UA_Client_getConfig(pclient)->endpointUrl);
-    UA_Client_delete(pclient);
-    pclient = nullptr;
+    // 3. Чистим read-контекст
+    UA_ReadRequest_clear(&readRequest);
+    readCtx.qdataRWs.clear();
 
+    // 4. Сбрасываем флаги
     freadBusy = false;
     fdisconnectQueued = false;
-    emit status(QString("[Info] Disconnect: %1").arg(endpointUrl));
+
+    // 5. Удаляем клиента (без попыток удалить подписки на сервере — сервер мог быть уже недоступен)
+    if (pclient) {
+        UA_Client_disconnect(pclient);          // безопасно даже если уже disconnected
+        UA_ExtensionObject_clear(&UA_Client_getConfig(pclient)->userIdentityToken);
+        QString endpointUrl = toQString(UA_Client_getConfig(pclient)->endpointUrl);
+        UA_Client_delete(pclient);
+        pclient = nullptr;
+        emit status(QString("[Info] Disconnect: %1").arg(endpointUrl));
+    }
 }
 
 void OPCUAClient::processTimer()
 {
     if (!pclient) return;
-    //обработка асинхронных операций
-    UA_Client_run_iterate(pclient, 0);
+    // UA_Client_run_iterate обрабатывает очередь асинхронных операций (в т.ч. callback'и)
+    UA_StatusCode ret = UA_Client_run_iterate(pclient, 0);
+    switch (ret) {
+    case UA_STATUSCODE_BADCONNECTIONCLOSED:
+    case UA_STATUSCODE_BADCONNECTIONREJECTED:
+    case UA_STATUSCODE_BADSESSIONCLOSED:
+    case UA_STATUSCODE_BADSESSIONIDINVALID:
+    case UA_STATUSCODE_BADSECURECHANNELIDINVALID:
+    case UA_STATUSCODE_BADSECURECHANNELCLOSED:
+    case UA_STATUSCODE_BADTIMEOUT:
+    case UA_STATUSCODE_BADNOTCONNECTED:
+    case UA_STATUSCODE_BADSHUTDOWN:
+        qDebug() << Q_FUNC_INFO << "Channel not usable:" << UA_StatusCode_name(ret);
+        return;
+    default:
+        emit status(QString("[Error] %1, run_iterate status: %2").arg(Q_FUNC_INFO, UA_StatusCode_name(ret)));
+        break;
+    }
 }
 
 void OPCUAClient::processReadNodeAsync()
@@ -582,6 +605,7 @@ bool OPCUAClient::getEndpoints(const QString &url, QList<Endpoint> &storeEndpoin
     UA_StatusCode statusEndpoints = UA_Client_getEndpoints(pclient, url.toUtf8().constData(), &endpointCount, &endpoints);
     if (statusEndpoints != UA_STATUSCODE_GOOD) {
         emit status(QString("[Error] %1 Failed to get endpoints, status: %2").arg(Q_FUNC_INFO, UA_StatusCode_name(statusEndpoints)));
+        if (endpoints) UA_Array_delete(endpoints, endpointCount, &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
         UA_Client_delete(pclient);
         pclient = nullptr;
         return false;
@@ -620,11 +644,9 @@ bool OPCUAClient::getEndpoints(const QString &url, QList<Endpoint> &storeEndpoin
 
 bool OPCUAClient::connectToServerAnonymous(const QString &url)
 {
-    if (pclient) {
-        disconnectFromServer();  // корректно всё чистит
-    }
-    pclient = UA_Client_new();
     if (isConnected(pclient)) return true;
+    disconnectClient();   // синхронно, гарантированно чистит старое состояние
+    pclient = UA_Client_new();
 
     UA_ClientConfig *config = UA_Client_getConfig(pclient);
     UA_ClientConfig_setDefault(config);
@@ -639,7 +661,7 @@ bool OPCUAClient::connectToServerAnonymous(const QString &url)
 
     UA_StatusCode statusConnect = UA_Client_connect(pclient, url.toUtf8().constData());
     if (statusConnect != UA_STATUSCODE_GOOD) {
-        disconnectFromServer();
+        disconnectClient();   // синхронно, гарантированно
         return false;
     }
     emit status(QString("[Info] Connecting to: %1").arg(toQString(UA_Client_getConfig(pclient)->endpointUrl)));
@@ -650,11 +672,9 @@ bool OPCUAClient::connectToServerAnonymous(const QString &url)
 
 bool OPCUAClient::connectToServerUsername(const QString &url, const Endpoint &endpoint, const QString &name, const QString &pass)
 {
-    if (pclient) {
-        disconnectFromServer();  // корректно всё чистит
-    }
-    pclient = UA_Client_new();
     if (isConnected(pclient)) return true;
+    disconnectClient();   // синхронно, гарантированно чистит старое состояние
+    pclient = UA_Client_new();
 
     //Получаем конфиг и настраиваем шифрование
     UA_ClientConfig *config = UA_Client_getConfig(pclient);
@@ -685,6 +705,7 @@ bool OPCUAClient::connectToServerUsername(const QString &url, const Endpoint &en
         UA_ByteString_clear(&clientCertificate);
         UA_ByteString_clear(&clientPrivateKey);
         emit status(QString("[Error] %1, Failed loadCertificate").arg(Q_FUNC_INFO));
+        disconnectClient();   // синхронно, гарантированно
         return false;
     }
     //ВАЖНО: Устанавливаем шифрование ДО подключения
@@ -696,7 +717,7 @@ bool OPCUAClient::connectToServerUsername(const QString &url, const Endpoint &en
         UA_ByteString_clear(&clientCertificate);
         UA_ByteString_clear(&clientPrivateKey);
         emit status(QString("[Error] %1, Failed to configure encryption: %2").arg(Q_FUNC_INFO).arg(UA_StatusCode_name(statusConfig)));
-        disconnectFromServer();
+        disconnectClient();   // синхронно, гарантированно
         return false;
     }
     //Подключаемся с использованием имени пользователя/пароля
@@ -706,7 +727,7 @@ bool OPCUAClient::connectToServerUsername(const QString &url, const Endpoint &en
     UA_ByteString_clear(&clientPrivateKey);
 
     if (statusConnect != UA_STATUSCODE_GOOD) {
-        disconnectFromServer();
+        disconnectClient();   // синхронно, гарантированно
         return false;
     }
     ptimer->start(); //таймер для обработки асинхронных операций
@@ -716,6 +737,13 @@ bool OPCUAClient::connectToServerUsername(const QString &url, const Endpoint &en
 
 void OPCUAClient::disconnectFromServer()
 {
+    if (subscriptionIds.isEmpty() || !isConnected(pclient)) {
+        // Нечего удалять — отключаемся сразу
+        QMetaObject::invokeMethod(this, [this]() {
+            disconnectClient();
+        }, Qt::QueuedConnection);
+        return;
+    }
     /* удаляем действующие подписки с коллбэком в лямбда функции, ждем коллбэк чтобы перейти к следующей итерации
      * и отключить клиента, если отключать клиента сразу, то подписка не успевает удалиться на сервере т.к. вызов асинхронный */
     deleteSubscriptionAsync(subscriptionIds, [this](bool succesCallback){
@@ -1016,6 +1044,7 @@ bool OPCUAClient::createSubscriptionToEventsAsync(const QList<QString> &nodeIds,
         if (!subscribeGroup->contexts || !subscribeGroup->eventCallbacks || !subscribeGroup->deleteCallbacks) {
             delete ctx;
             ctx = nullptr;
+            delete subscribeGroup;
             return false;
         };
         subscribeGroup->contexts[i] = ctx;
@@ -1065,18 +1094,7 @@ bool OPCUAClient::createSubscriptionToEventsAsync(const QList<QString> &nodeIds,
                                                                                         QString::number(subscribeGroup->subscriptionId),
                                                                                         QString::number(resp->resultsSize)));
         } else {
-            //1.удаляем ContextNodes объекты
-            if (subscribeGroup->contexts) {
-                for (auto i = 0; i < subscribeGroup->monitoredIdsSize; i++) {
-                    if (subscribeGroup->contexts[i]) {
-                        ContextEvent *ctx = static_cast<ContextEvent*>(subscribeGroup->contexts[i]);
-                        delete ctx;
-                        ctx = nullptr;
-                    }
-                }
-            }
-            //2.удаляем саму подписку
-            delete subscribeGroup; //все ресурсы очищаем в деструкторе ~subscribeGroup()
+            delete subscribeGroup; //все ресурсы очищаем в деструкторе ~subscribeGroup() (контекст очистится в деструкторе)
             subscribeGroup = nullptr;
             emit self->status(QString("[Error] %1 status: %2, size: %3").arg(Q_FUNC_INFO,
                                                                              UA_StatusCode_name(resp->responseHeader.serviceResult),
@@ -1093,18 +1111,7 @@ bool OPCUAClient::createSubscriptionToEventsAsync(const QList<QString> &nodeIds,
                                                                        subscribeGroup->deleteCallbacks, createCallback, subscribeGroup, &requestId);
 
     if (retval != UA_STATUSCODE_GOOD) {  //обработка ошибок в loggingCallback
-        //1.удаляем ContextNodes объекты
-        if (subscribeGroup->contexts) {
-            for (auto i = 0; i < subscribeGroup->monitoredIdsSize; i++) {
-                if (subscribeGroup->contexts[i]) {
-                    ContextEvent *ctx = static_cast<ContextEvent*>(subscribeGroup->contexts[i]);
-                    delete ctx;
-                    ctx = nullptr;
-                }
-            }
-        }
-        //2.удаляем саму подписку
-        delete subscribeGroup; //все ресурсы очищаем в деструкторе ~subscribeGroup()
+        delete subscribeGroup; //все ресурсы очищаем в деструкторе ~subscribeGroup() (контекст очистится в деструкторе)
         subscribeGroup = nullptr;
         return false;
     }
@@ -1225,18 +1232,7 @@ bool OPCUAClient::createSubscriptionToNodesAsync(const QList<QString> &nodeIds, 
                                                                                         QString::number(subscribeGroup->subscriptionId),
                                                                                         QString::number(resp->resultsSize)));
         } else {
-            //1.удаляем ContextNodes объекты
-            if (subscribeGroup->contexts) {
-                for (auto i = 0; i < subscribeGroup->monitoredIdsSize; i++) {
-                    if (subscribeGroup->contexts[i]) {
-                        ContextNodes *ctx = static_cast<ContextNodes*>(subscribeGroup->contexts[i]);
-                        delete ctx;
-                        ctx = nullptr;
-                    }
-                }
-            }
-            //2.удаляем саму подписку
-            delete subscribeGroup; //все ресурсы очищаем в деструкторе ~subscribeGroup()
+            delete subscribeGroup; //все ресурсы очищаем в деструкторе ~subscribeGroup() (контекст очистится в деструкторе)
             subscribeGroup = nullptr;
             emit self->status(QString("[Error] %1 status:%2, size: %3").arg(Q_FUNC_INFO,
                                                                             UA_StatusCode_name(resp->responseHeader.serviceResult),
@@ -1255,18 +1251,7 @@ bool OPCUAClient::createSubscriptionToNodesAsync(const QList<QString> &nodeIds, 
                                                                             createCallback, subscribeGroup, &requestId);
 
     if (retval != UA_STATUSCODE_GOOD) {  //обработка ошибок в loggingCallback
-        //1.удаляем ContextNodes объекты
-        if (subscribeGroup->contexts) {
-            for (auto i = 0; i < subscribeGroup->monitoredIdsSize; i++) {
-                if (subscribeGroup->contexts[i]) {
-                    ContextNodes *ctx = static_cast<ContextNodes*>(subscribeGroup->contexts[i]);
-                    delete ctx;
-                    ctx = nullptr;
-                }
-            }
-        }
-        //2.удаляем саму подписку
-        delete subscribeGroup; //все ресурсы очищаем в деструкторе ~subscribeGroup()
+        delete subscribeGroup; //все ресурсы очищаем в деструкторе ~subscribeGroup() (контекст очистится в деструкторе)
         subscribeGroup = nullptr;
         return false;
     }
@@ -1307,7 +1292,6 @@ bool OPCUAClient::deleteSubscriptionItemAsync(SubscribeGroupNodes *subscribeGrou
             //Теперь удаляем саму подписку
             // self->deleteSubscriptionAsync(ctx->subGroup, ctx->callback);
         }
-        UA_free(userdata);
         UA_DeleteMonitoredItemsResponse_clear(resp);
     };
 
@@ -1322,13 +1306,19 @@ bool OPCUAClient::deleteSubscriptionItemAsync(SubscribeGroupNodes *subscribeGrou
 }
 
 bool OPCUAClient::deleteSubscriptionAsync(QList<UA_UInt32> &subscriptionIds, std::function<void (bool)> succesCallback) {
-    if (!pclient || !isConnected(pclient) || subscriptionIds.isEmpty()) return false;
+    if (!pclient || !isConnected(pclient) || subscriptionIds.isEmpty()) {
+        succesCallback(false);
+        return false;
+    }
 
     UA_DeleteSubscriptionsRequest delSubReq;
     UA_DeleteSubscriptionsRequest_init(&delSubReq);
     delSubReq.subscriptionIdsSize = subscriptionIds.size();
     delSubReq.subscriptionIds =  static_cast<UA_UInt32*>(UA_Array_new(delSubReq.subscriptionIdsSize, &UA_TYPES[UA_TYPES_UINT32]));
-    if (!delSubReq.subscriptionIds) return false;
+    if (!delSubReq.subscriptionIds) {
+        succesCallback(false);
+        return false;
+    }
     for (auto i = 0; i < delSubReq.subscriptionIdsSize; i++) {
         delSubReq.subscriptionIds[i] = subscriptionIds[i];
     }
@@ -1374,7 +1364,7 @@ bool OPCUAClient::deleteSubscriptionAsync(QList<UA_UInt32> &subscriptionIds, std
     UA_StatusCode retval = UA_Client_Subscriptions_delete_async(pclient, delSubReq, deleteSubscriptionCallback,
                                                                 userData, &requestId);
     //Очищаем память
-    UA_Array_delete(delSubReq.subscriptionIds, 1, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_Array_delete(delSubReq.subscriptionIds, delSubReq.subscriptionIdsSize, &UA_TYPES[UA_TYPES_UINT32]);
     if (retval != UA_STATUSCODE_GOOD) {
         delete userData;
         userData = nullptr;
