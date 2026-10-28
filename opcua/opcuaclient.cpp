@@ -551,21 +551,8 @@ void OPCUAClient::processTimer()
     if (!pclient) return;
     // UA_Client_run_iterate обрабатывает очередь асинхронных операций (в т.ч. callback'и)
     UA_StatusCode ret = UA_Client_run_iterate(pclient, 0);
-    switch (ret) {
-    case UA_STATUSCODE_BADCONNECTIONCLOSED:
-    case UA_STATUSCODE_BADCONNECTIONREJECTED:
-    case UA_STATUSCODE_BADSESSIONCLOSED:
-    case UA_STATUSCODE_BADSESSIONIDINVALID:
-    case UA_STATUSCODE_BADSECURECHANNELIDINVALID:
-    case UA_STATUSCODE_BADSECURECHANNELCLOSED:
-    case UA_STATUSCODE_BADTIMEOUT:
-    case UA_STATUSCODE_BADNOTCONNECTED:
-    case UA_STATUSCODE_BADSHUTDOWN:
-        qDebug() << Q_FUNC_INFO << "Channel not usable:" << UA_StatusCode_name(ret);
-        return;
-    default:
+    if (ret != UA_STATUSCODE_GOOD) {
         emit status(QString("[Error] %1, run_iterate status: %2").arg(Q_FUNC_INFO, UA_StatusCode_name(ret)));
-        break;
     }
 }
 

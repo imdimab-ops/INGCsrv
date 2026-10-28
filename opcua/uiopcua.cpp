@@ -27,7 +27,7 @@ void UiOPCUA::setupUI()
     ui->label_info->setStyleSheet("color: #ffa700;");
 
     ui->label_logo->setPixmap(QPixmap(":/img/open62541.png").scaled(130, 130, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    ui->pb_connect->setEnabled(false);
+    ui->pb_connect->setDisabled(true);
 
     ui->le_pass->setEchoMode(QLineEdit::Password);
     ui->rb_connect->setAttribute(Qt::WA_TransparentForMouseEvents, true);     //отключаем событие мыши
@@ -36,6 +36,7 @@ void UiOPCUA::setupUI()
 
     //Создаем группу кнопок
     QButtonGroup *buttonGroup = new QButtonGroup(this);
+    buttonGroup->setObjectName("authButtonGroup");   // <-- задаём уникальное имя
     buttonGroup->addButton(ui->rb_anonymous, 1);
     buttonGroup->addButton(ui->rb_username, 2);
     connect(buttonGroup, &QButtonGroup::buttonClicked, this, [this, buttonGroup] (QAbstractButton *button) {
@@ -103,24 +104,30 @@ void UiOPCUA::setupConnections()
 
     connect(ui->pb_close, &QPushButton::clicked, this, [this] () { this->close(); });
 
-    connect(opcClient, &OPCUAClient::connected, this, [this] (const bool &b) {
+    QButtonGroup *buttonGroup = this->findChild<QButtonGroup*>("authButtonGroup"); //поиск по имени т.к. buttonGroup - не член класса
+    connect(opcClient, &OPCUAClient::connected, this, [this, buttonGroup] (const bool &b) {
         if (b) {
             ui->rb_connect->setIcon(QIcon(":img/icon/plugconnected.svg"));
         } else {
             ui->rb_connect->setIcon(QIcon(":img/icon/plugdisconnected.svg"));
             ui->le_endpointURL->clear();
             ui->cb_endpoint->clear();
+
+            //сбрасываем состояние радиокнопок
+            if (buttonGroup && buttonGroup->checkedButton()) {
+                buttonGroup->setExclusive(false);           // Временно отключаем эксклюзивность
+                buttonGroup->checkedButton()->setChecked(false); // Снимаем выделение с текущей выбранной кнопки
+                buttonGroup->setExclusive(true);            // Включаем эксклюзивность обратно
+            }
         }
+        ui->pb_connect->setDisabled(true); //включаем кнопку только при переключении QRadioButton в QButtonGroup
         ui->rb_connect->setChecked(b);
-        ui->rb_anonymous->setDisabled(b);
-        ui->rb_username->setDisabled(b);
         ui->le_serverURL->setDisabled(b);
         ui->le_endpointURL->setDisabled(b);
         ui->le_username->setDisabled(b);
         ui->le_pass->setDisabled(b);
         ui->cb_endpoint->setDisabled(b);
         ui->pb_getEndpoints->setDisabled(b);
-        ui->pb_connect->setDisabled(b);
         ui->chBox_subscribeToData->setDisabled(b);
         ui->chBox_subscribeToEvents->setDisabled(b);
         QTimer::singleShot(500, this, [this]() { opcClient->browseNode(nullptr); }); //вызываем с задержкой иначе получается рекурсивный коннект хз
